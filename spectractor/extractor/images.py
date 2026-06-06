@@ -1,5 +1,6 @@
 from astropy.coordinates import Angle, SkyCoord, Latitude
 from astropy.io import fits
+from astropy.wcs import WCS
 import astropy.units as units
 from scipy import ndimage
 import matplotlib as mpl
@@ -282,6 +283,8 @@ class Image(object):
             load_AUXTEL_image(self)
         elif parameters.OBS_NAME == "STARDICE":
             load_STARDICE_image(self)
+        else:
+            load_OTHER_image(self)
         # Load the disperser
         self.my_logger.info(f'\n\tLoading disperser {self.disperser_label}...')
         self.header["GRATING"] = self.disperser_label
@@ -867,6 +870,82 @@ def load_STARDICE_image(image):  # pragma: no cover
 
     image.read_out_noise = 8.5 * np.ones_like(image.data)
     image.compute_parallactic_angle()
+
+
+def load_OTHER_image(image: Image):
+    """Generic routine to load images from miscellaneous observatories/instruments.
+
+    Parameters
+    ----------
+    image: Image
+        The Image instance to fill with file data and header.
+    """
+    image.my_logger.info(f'\n\tLoading generic image {image.file_name}...')
+
+    with fits.open(image.file_name) as hdu_list:
+        data_hdu = None
+        for hdu in hdu_list:
+            if hdu.data is not None:
+                data_hdu = hdu
+                break
+        if data_hdu is None:
+            raise RuntimeError(f"No image data found in {image.file_name}.")
+
+        image.header = hdu_list[0].header.copy()
+        if data_hdu.header is not hdu_list[0].header:
+            image.header.update(data_hdu.header)
+        image.data = np.asarray(np.squeeze(data_hdu.data), dtype=np.float64)
+
+    if image.data.ndim != 2:
+        raise RuntimeError(f"Expected a 2D image in {image.file_name}; got shape {image.data.shape}.")
+
+    if "BZERO" in image.header:
+        del image.header["BZERO"]
+    if "BSCALE" in image.header:
+        del image.header["BSCALE"]
+
+    image.date_obs = image.header.get('DATE-OBS', image.header.get('DATE', 'J2000'))
+    image.expo = float(image.header.get('EXPTIME', image.header.get('EXPOSURE', 1.0)))
+    image.airmass = float(image.header.get('AIRMASS', 1.0))
+    image.filters = image.header.get('FILTERS', image.header.get('FILTER', ''))
+
+    if 'FILTER' in image.header and str(image.header['FILTER']).lower() not in ('', 'empty', 'clear', 'none', 'open'):
+        image.filter_label = image.header['FILTER']
+
+    if not image.disperser_label:
+        image.disperser_label = image.header.get('GRATING', '')
+    if not image.disperser_label:
+        raise ValueError("No disperser label supplied and no GRATING keyword found in FITS header.")
+
+    ra_value = image.header.get('RA', image.header.get('OBJCTRA', 0.0))
+    ra_unit = "hourangle" if isinstance(ra_value, str) and (":" in ra_value or " " in ra_value) else "deg"
+    image.ra = Angle(ra_value, unit=ra_unit)
+    image.dec = Angle(image.header.get('DEC', image.header.get('OBJCTDEC', 0.0)), unit="deg")
+
+    ha_value = image.header.get('HA', image.header.get('HOURANGL', 0.0))
+    ha_unit = "hourangle" if isinstance(ha_value, str) and (":" in ha_value or " "in ha_value) else "deg"
+    image.hour_angle = Angle(ha_value, unit=ha_unit)
+
+    image.temperature = float(image.header.get('OUTTEMP', image.header.get('FOCUSTEM', 20.0)))
+    image.pressure = float(image.header.get('OUTPRESS', image.header.get('PRESSURE', 1013.25)))
+    image.humidity = float(image.header.get('OUTHUM', image.header.get('HUMIDITY', 50.0)))
+
+    image.gain = float(parameters.CCD_GAIN) * np.ones_like(image.data)
+    image.read_out_noise = float(getattr(parameters, 'CCD_READOUT_NOISE', 10.)) * np.ones_like(image.data)
+
+    try:
+        image.wcs = WCS(image.header)
+        if not image.wcs.has_celestial:
+            image.wcs = None
+    except Exception:
+        image.wcs = None
+
+    try:
+        image.compute_parallactic_angle()
+    except Exception as exc:
+        image.my_logger.warning(f"\n\tCould not compute parallactic angle for image: {exc}")
+
+    image.my_logger.info('\n\tImage loaded.')
 
 
 def find_target(image, guess=None, rotated=False, widths=[parameters.XWINDOW, parameters.YWINDOW]):
