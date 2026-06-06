@@ -179,9 +179,10 @@ class TelescopeTransmission:
                 filter_filename = self.filter_label
             else:
                 filter_filename = self.filter_label + ".txt"
-            wl, trb, err = load_transmission_file(os.path.join(parameters.THROUGHPUT_DIR, filter_filename))
-            TF = interp1d(wl, trb, kind='linear', bounds_error=False, fill_value=0.)
-            TF_err = interp1d(wl, err, kind='linear', bounds_error=False, fill_value=0.)
+            if os.path.isfile(filter_transmission_path := os.path.join(parameters.THROUGHPUT_DIR, filter_filename)):
+                wl, trb, err = load_transmission_file(filter_transmission_path)
+                TF = interp1d(wl, trb, kind='linear', bounds_error=False, fill_value=0.)
+                TF_err = interp1d(wl, err, kind='linear', bounds_error=False, fill_value=0.)
 
         # self.transmission=lambda x: self.qe(x)*self.to(x)*(self.tm(x)**2)*self.tf(x)
         self.transmission = lambda x: to(x) * TF(x)
