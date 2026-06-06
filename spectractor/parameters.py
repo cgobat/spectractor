@@ -81,6 +81,7 @@ OBS_CAMERA_DEC_FLIP_SIGN = 1  # Camera (x,y) flip signs with respect to (north-u
 OBS_CAMERA_RA_FLIP_SIGN = 1  # Camera (x,y) flip signs with respect to (north-up, east-left) system
 
 # Spectrograph
+DISPERSER_LABEL = "" # disperser label (e.g., "HoloPhP", "star_analyzer_200", "Ron400", etc.)
 DISTANCE2CCD = 55.45  # distance between hologram and CCD in mm
 DISTANCE2CCD_ERR = 0.19  # uncertainty on distance between hologram and CCD in mm
 GRATING_ORDER_2OVER1 = 0.1  # default value for order 2 over order 1 transmission ratio

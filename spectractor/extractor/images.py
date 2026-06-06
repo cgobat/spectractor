@@ -143,7 +143,7 @@ class Image(object):
         self.airmass = -1
         self.date_obs = None
         self.disperser = None
-        self.disperser_label = disperser_label
+        self.disperser_label = disperser_label or getattr(parameters, "DISPERSER_LABEL", "")
         self.target_label = target_label
         self.target_guess = None
         self.filter_label = ""
