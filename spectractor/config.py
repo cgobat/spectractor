@@ -49,7 +49,7 @@ def from_config_to_dict(path):
                     value = float(value)
                 else:
                     value = int(value)
-            elif value == 'True' or value == 'False':
+            elif value.lower() in config.BOOLEAN_STATES:
                 value = config.getboolean(section, options)
             else:
                 value = str(value)
