@@ -1209,28 +1209,27 @@ def fit_moffat1d(x, y, guess=None, bounds=None):
 
 def compute_fwhm(x, y, minimum=0, center=None, full_output=False, epsilon=1e-3):
     """
-    Compute the full width half maximum of y(x) curve,
-    using an interpolation of the data points and dichotomie method.
+    Compute the full width at half maximum of a y(x) curve.
 
     Parameters
     ----------
-    x: array_like
+    x: array-like
         The abscissa array.
-    y: array_like
+    y: array-like
         The function array.
     minimum: float, optional
         The minimum reference from which to compute half the height (default: 0).
     center: float, optional
         The center of the curve. If None, the weighted average of the y(x) distribution is computed (default: None).
     full_output: bool, optional
-        If True, half maximum, the edges of the curve and the curve center are given in output (default: False).
+        If True, return (fwhm, half_max, center, x_right, x_left) instead of just fwhm
     epsilon: float, optional
-        Dichotomie algorithm stop if difference is smaller than epsilon (default: 1e-3).
+        Unused argument.
 
     Returns
     -------
     FWHM: float
-        The full width half maximum of the curve.
+        The full width at half maximum of the curve. Returns np.nan if it cannot be determined.
     half: float, optional
         The half maximum value. Only if full_output=True.
     center: float, optional
@@ -1316,26 +1315,49 @@ def compute_fwhm(x, y, minimum=0, center=None, full_output=False, epsilon=1e-3):
         plt.ylabel("y")
         plt.show()
     """
-    if y.ndim > 1:
+    if x.ndim != 1 or y.ndim != 1:
         # TODO: implement fwhm for 2D curves
         return -1
-    interp = interp1d(x, y, kind="linear", bounds_error=False, fill_value="extrapolate")
-    maximum = np.max(y) - minimum
+    if x.size != y.size:
+        raise ValueError("x and y must have the same length.")
+
+    good = np.isfinite(x) & np.isfinite(y)
+    x = x[good]
+    y = y[good]
+
+    if x.size < 3:
+        fwhm = np.nan
+        return (fwhm, np.nan, center, np.nan, np.nan) if full_output else fwhm
+
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+
     imax = np.argmax(y)
-    a = x[imax + np.argmin(np.abs(y[imax:] - 0.9 * maximum))]
-    b = x[imax + np.argmin(np.abs(y[imax:] - 0.1 * maximum))]
+    half_max = minimum + 0.5 * (y[imax] - minimum)
+    z = y - half_max
 
-    def eq(xx):
-        return interp(xx) - 0.5 * maximum
+    left = np.where(z[:imax] * z[1:imax + 1] <= 0)[0]
+    right = np.where(z[imax:-1] * z[imax + 1:] <= 0)[0] + imax
 
-    res = dichotomie(eq, a, b, epsilon)
-    if center is None:
-        center = np.average(x, weights=y)
-    fwhm = abs(2 * (res - center))
+    if left.size == 0 or right.size == 0:
+        fwhm = np.nan
+        return (fwhm, half_max, center, np.nan, np.nan) if full_output else fwhm
+
+    def crossing(i):
+        if y[i + 1] == y[i]:
+            return 0.5 * (x[i] + x[i + 1])
+        return x[i] + (half_max - y[i]) * (x[i + 1] - x[i]) / (y[i + 1] - y[i])
+
+    x_left = crossing(left[-1])
+    x_right = crossing(right[0])
+    fwhm = x_right - x_left
+
     if not full_output:
         return fwhm
-    else:
-        return fwhm, 0.5 * maximum, center, res, center - abs(res - center)
+    if center is None:
+        center = x[imax]
+    return fwhm, half_max, center, x_right, x_left
 
 
 def compute_integral(x, y, bounds=None):
@@ -2190,51 +2212,6 @@ def save_fits(file_name, header, data, overwrite=False):
     output_directory = '/'.join(file_name.split('/')[:-1])
     ensure_dir(output_directory)
     hdu.writeto(file_name, overwrite=overwrite)
-
-
-def dichotomie(f, a, b, epsilon):
-    """
-    Dichotomie method to find a function root.
-
-    Parameters
-    ----------
-    f: callable
-        The function
-    a: float
-        Left bound to the expected root
-    b: float
-        Right bound to the expected root
-    epsilon: float
-        Precision
-
-    Returns
-    -------
-    root: float
-        The root of the function.
-
-    Examples
-    --------
-
-    Search for the Gaussian FWHM:
-
-    >>> p = [1,0,1]
-    >>> xx = np.arange(-10,10,0.1)
-    >>> PSF = gauss(xx, *p)
-    >>> def eq(x):
-    ...     return np.interp(x, xx, PSF) - 0.5
-    >>> root = dichotomie(eq, 0, 10, 1e-6)
-    >>> assert np.isclose(2*root, 2.355*p[2], 1e-3)
-    """
-    x = 0.5 * (a + b)
-    N = 1
-    while b - a > epsilon and N < 100:
-        x = 0.5 * (a + b)
-        if f(x) * f(a) > 0:
-            a = x
-        else:
-            b = x
-        N += 1
-    return x
 
 
 def wavelength_to_rgb(wavelength, gamma=0.8):
