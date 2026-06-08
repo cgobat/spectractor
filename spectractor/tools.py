@@ -2206,9 +2206,7 @@ def save_fits(file_name, header, data, overwrite=False):
         >>> os.remove("./outputs/save_fits_test.fits")
 
     """
-    hdu = fits.PrimaryHDU()
-    hdu.header = header
-    hdu.data = data
+    hdu = fits.PrimaryHDU(data, header)
     output_directory = '/'.join(file_name.split('/')[:-1])
     ensure_dir(output_directory)
     hdu.writeto(file_name, overwrite=overwrite)

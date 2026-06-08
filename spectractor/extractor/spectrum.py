@@ -1,5 +1,6 @@
 from scipy.signal import argrelextrema, savgol_filter
 from scipy.interpolate import interp1d
+from astropy.coordinates import Angle
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
@@ -10,10 +11,9 @@ import numpy as np
 import os
 import random
 import string
-import astropy
 import warnings
 import itertools
-warnings.filterwarnings('ignore', category=astropy.io.fits.card.VerifyWarning, append=True)
+warnings.filterwarnings('ignore', category=fits.card.VerifyWarning, append=True)
 
 from spectractor import parameters
 from spectractor.config import set_logger, load_config, update_derived_parameters
@@ -672,7 +672,7 @@ class Spectrum:
             except AttributeError:
                 self.my_logger.warning(f"Failed to get {attribute}")
                 continue
-            if isinstance(value, astropy.coordinates.angles.Angle):
+            if isinstance(value, Angle):
                 value = value.degree
             hdu1.header[header_key] = value
             # print(f"Set header key {header_key} to {value} from attr {attribute}")
@@ -744,16 +744,17 @@ class Spectrum:
                         continue
                     try:
                         value = getattr(parameters, item)
-                        if isinstance(value, astropy.coordinates.angles.Angle):
+                        if isinstance(value, Angle):
                             value = value.degree
-                        if isinstance(value, astropy.units.quantity.Quantity):
+                        if isinstance(value, u.Quantity):
                             value = value.value
                         if isinstance(value, (np.ndarray, list)):
                             continue
-                        if not isinstance(value, (float, int, str, np.ndarray, list)):
-                            raise ValueError(f"Can't handle {parameters.item} type {type(parameters.item)}.")
+                        if not isinstance(value, (float, int, str, np.ndarray, np.integer, list, bool)):
+                            raise ValueError(f"Can't handle parameters.{item} type {type(value)}.")
                     except AttributeError:
-                        raise KeyError(f"Failed to get parameters.{item}.")
+                        self.my_logger.error(f"Failed to get parameters.{item}.")
+                        continue
                     if len(item) > 8:
                         fits_longkey = "HIERARCH " + item
                         char_set = string.ascii_uppercase + string.digits
