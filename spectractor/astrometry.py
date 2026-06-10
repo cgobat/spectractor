@@ -306,16 +306,13 @@ class Astrometry():  # pragma: no cover
         self.wcs_file_name = wcs_file_name
         self.match_file_name = os.path.join(self.output_directory, self.tag) + ".match"
         self.wcs = None
-        if self.wcs_file_name != "":
-            if os.path.isfile(self.wcs_file_name):
-                self.wcs = load_wcs_from_file(self.wcs_file_name)
-            else:
-                self.my_logger.warning(f"WCS file {wcs_file_name} does not exist. Skip it.")
-        else:
+        if not self.wcs_file_name:
             self.wcs_file_name = set_wcs_file_name(self.image.file_name, output_directory=output_directory)
-            if os.path.isfile(self.wcs_file_name):
-                self.wcs = load_wcs_from_file(self.wcs_file_name)
-        if gaia_file_name != "":
+        if os.path.isfile(self.wcs_file_name):
+            self.wcs = load_wcs_from_file(self.wcs_file_name)
+        else:
+            self.my_logger.warning(f"WCS file {wcs_file_name} does not exist. Skip it.")
+        if gaia_file_name:
             self.gaia_file_name = gaia_file_name
         else:
             self.gaia_file_name = set_gaia_catalog_file_name(self.image.file_name, output_directory=output_directory)
@@ -417,8 +414,7 @@ class Astrometry():  # pragma: no cover
         745... 684...
 
         """
-        target_x, target_y = self.wcs.all_world2pix(self.image.target.radec_position_after_pm.ra,
-                                                    self.image.target.radec_position_after_pm.dec, 0)
+        target_x, target_y = self.image.target.radec_position_after_pm.to_pixel(self.wcs, 0, "all")
         return target_x, target_y
 
     def get_gaia_pixel_positions(self, gaia_index=None):
@@ -456,11 +452,9 @@ class Astrometry():  # pragma: no cover
 
         """
         if gaia_index is None:
-            gaia_x, gaia_y = self.wcs.all_world2pix(self.gaia_radec_positions_after_pm.ra,
-                                                    self.gaia_radec_positions_after_pm.dec, 0, quiet=True)
+            gaia_x, gaia_y = self.gaia_radec_positions_after_pm.to_pixel(self.wcs, 0, "all")
         else:
-            gaia_x, gaia_y = self.wcs.all_world2pix(self.gaia_radec_positions_after_pm[gaia_index].ra,
-                                                    self.gaia_radec_positions_after_pm[gaia_index].dec, 0, quiet=True)
+            gaia_x, gaia_y = self.gaia_radec_positions_after_pm[gaia_index].to_pixel(self.wcs, 0, "all")
         return gaia_x, gaia_y
 
     def get_quad_stars_pixel_positions(self):
