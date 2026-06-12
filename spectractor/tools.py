@@ -1,12 +1,13 @@
 import os
 import copy
 import shutil
-from photutils.detection import IRAFStarFinder
+import sep
 from scipy.optimize import curve_fit
 import numpy as np
 from astropy.modeling import models, fitting
-from astropy.stats import sigma_clip, sigma_clipped_stats
+from astropy.stats import sigma_clip
 from astropy.io import fits
+from astropy.table import Table
 from astropy import wcs as WCS
 
 from matplotlib import cm
@@ -2783,29 +2784,33 @@ if __name__ == "__main__":
     doctest.testmod()
 
 
-def iraf_source_detection(data_wo_bkg, sigma=3.0, fwhm=3.0, threshold_std_factor=5, mask=None):
-    """Function to detect point-like sources in a data array.
-
-    This function use the photutils IRAFStarFinder module to search for sources in an image. This finder
-    is better than DAOStarFinder for the astrometry of isolated sources but less good for photometry.
+def sep_source_detection(data, threshold_std_factor=5, mask=None, minarea=5, deblend_nthresh=32,
+                         deblend_cont=0.005, background_box_size=(50, 50), background_filter_size=(11, 11)):
+    """Detect sources in an image with SEP.
 
     Parameters
     ----------
-    data_wo_bkg: array_like
-        The image data array. It works better if the background was subtracted before.
-    sigma: float
-        Standard deviation value for sigma clipping function before finding sources (default: 3.0).
-    fwhm: float
-        Full width half maximum for the source detection algorithm (default: 3.0).
+    data: array_like
+        The image data array.
     threshold_std_factor: float
-        Only sources with a flux above this value times the RMS of the images are kept (default: 5).
+        SEP extraction threshold in background RMS units (default: 5).
     mask: array_like, optional
         Boolean array to mask image pixels (default: None).
+    minarea: int
+        Minimum number of pixels above threshold required for detection (default: 5).
+    deblend_nthresh: int
+        Number of thresholds used by SEP for deblending (default: 32).
+    deblend_cont: float
+        Minimum contrast ratio used by SEP for deblending (default: 0.005).
+    background_box_size: 2-tuple
+        Background mesh size along x and y used by SEP (default: (50, 50)).
+    background_filter_size: 2-tuple
+        Background filter size along x and y used by SEP (default: (11, 11)).
 
     Returns
     -------
     sources: Table
-        Astropy table containing the source centroids and fluxes, ordered by decreasing magnitudes.
+        Astropy table containing source centroids and fluxes, ordered by decreasing flux.
 
     Examples
     --------
@@ -2815,21 +2820,20 @@ def iraf_source_detection(data_wo_bkg, sigma=3.0, fwhm=3.0, threshold_std_factor
     >>> yy, xx = np.mgrid[:N, :N]
     >>> x_center, y_center = 20, 30
     >>> data += 10*np.exp(-((x_center-xx)**2+(y_center-yy)**2)/10)
-    >>> sources = iraf_source_detection(data)
-    >>> print(float(sources["xcentroid"]), float(sources["ycentroid"]))
-    20.0 30.0
+    >>> sources = sep_source_detection(data)
+    >>> print(float(sources["xcentroid"][0]), float(sources["ycentroid"][0]))  # doctest: +ELLIPSIS
+    20.0... 30.0...
 
     .. doctest:
         :hide:
 
         >>> assert len(sources) == 1
-        >>> assert sources["xcentroid"] == x_center
-        >>> assert sources["ycentroid"] == y_center
+        >>> assert np.isclose(sources["xcentroid"][0], x_center)
+        >>> assert np.isclose(sources["ycentroid"][0], y_center)
 
-    .. plot:
+    .. plot::
 
-        from spectractor.tools import plot_image_simple
-        from spectractor.astrometry import source_detection
+        from spectractor.tools import plot_image_simple, sep_source_detection
         import numpy as np
         import matplotlib.pyplot as plt
 
@@ -2838,25 +2842,34 @@ def iraf_source_detection(data_wo_bkg, sigma=3.0, fwhm=3.0, threshold_std_factor
         yy, xx = np.mgrid[:N, :N]
         x_center, y_center = 20, 30
         data += 10*np.exp(-((x_center-xx)**2+(y_center-yy)**2)/10)
-        sources = iraf_source_detection(data)
+        sources = sep_source_detection(data)
+        positions = np.array((sources["xcentroid"], sources["ycentroid"]))
         fig = plt.figure(figsize=(6,5))
-        plot_image_simple(plt.gca(), data, target_pixcoords=(sources["xcentroid"], sources["ycentroid"]))
+        plot_image_simple(plt.gca(), data, target_pixcoords=positions)
         fig.tight_layout()
         plt.show()
 
     """
-    mean, median, std = sigma_clipped_stats(data_wo_bkg, sigma=sigma)
-    #fwhm = 5
-    #threshold_std_factor = 3
+    data = np.ascontiguousarray(data, dtype=np.float32)
     if mask is None:
-        mask = np.zeros(data_wo_bkg.shape, dtype=bool)
-    # daofind = DAOStarFinder(fwhm=fwhm, threshold=threshold_std_factor * std, exclude_border=True)
-    # sources = daofind(data_wo_bkg - median, mask=mask)
-    iraffind = IRAFStarFinder(fwhm=fwhm, threshold=threshold_std_factor * std, exclude_border=True)
-    sources = iraffind(data_wo_bkg - median, mask=mask)
+        mask = np.zeros(data.shape, dtype=bool)
+    else:
+        mask = np.ascontiguousarray(mask, dtype=bool)
+
+    background = sep.Background(data, mask=mask, bw=background_box_size[0], bh=background_box_size[1],
+                                fw=background_filter_size[0], fh=background_filter_size[1])
+    data_wo_bkg = data - background.back()
+    objects = sep.extract(data_wo_bkg, threshold_std_factor, err=background.globalrms, mask=mask,
+                          minarea=minarea, deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont)
+
+    sources = Table()
+    sources["xcentroid"] = objects["x"]
+    sources["ycentroid"] = objects["y"]
+    sources["flux"] = objects["flux"]
+    sources.sort("flux", reverse=True)
     for col in sources.colnames:
         sources[col].info.format = '%.8g'  # for consistent table output
-    sources.sort('mag')
+
     if parameters.DEBUG:
         positions = np.array((sources['xcentroid'], sources['ycentroid']))
         plot_image_simple(plt.gca(), data_wo_bkg, scale="symlog", target_pixcoords=positions)

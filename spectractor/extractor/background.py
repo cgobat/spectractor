@@ -8,8 +8,8 @@ import copy
 from spectractor import parameters
 from spectractor.tools import fit_poly1d_outlier_removal, fit_poly2d_outlier_removal, plot_image_simple
 
+import sep
 from astropy.stats import SigmaClip
-from photutils.background import Background2D, SExtractorBackground
 from photutils.segmentation import detect_threshold, detect_sources
 
 from scipy.signal import medfilt2d
@@ -26,16 +26,25 @@ def _from_bkgd_interp_to_func(bgd_model_func_interp):
 
 
 def remove_image_background_sextractor(data, sigma=3.0, box_size=(50, 50), filter_size=(3, 3), positive=False):
-    sigma_clip = SigmaClip(sigma=sigma)
-    bkg_estimator = SExtractorBackground()
-    bkg = Background2D(data, box_size, filter_size=filter_size,
-                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-    data_wo_bkg = data - bkg.background
+    sep_data = np.ascontiguousarray(data, dtype=np.float32)
+    finite_mask = ~np.isfinite(sep_data)
+    if mask is None:
+        sep_mask = finite_mask
+    else:
+        sep_mask = np.logical_or(np.ascontiguousarray(mask, dtype=bool),
+                                 finite_mask)
+    if np.any(finite_mask):
+        sep_data = sep_data.copy()
+        sep_data[finite_mask] = 0
+
+    bkg = sep.Background(sep_data, mask=mask, bw=box_size[0], bh=box_size[1],
+                         fw=filter_size[0], fh=filter_size[1])
+    data_wo_bkg = np.asarray(data, dtype=float) - bkg.back()
     if positive:
-        data_wo_bkg -= np.min(data_wo_bkg)
+        data_wo_bkg -= np.nanmin(data_wo_bkg)
     if parameters.DEBUG:
         fig, ax = plt.subplots(1, 2, figsize=(11, 5))
-        plot_image_simple(ax[0], bkg.background, scale="lin")
+        plot_image_simple(ax[0], bkg.back(), scale="lin")
         plot_image_simple(ax[1], data_wo_bkg, scale="symlog")
         fig.tight_layout()
         plt.show()
@@ -49,8 +58,8 @@ def make_source_mask(data, nsigma, npixels, mask=None, sigclip_sigma=3.0,
     """
     Make a source mask using source segmentation and binary dilation.
 
-    This is a slight stripped down version of the method which was removed from
-    photutils in 1.7.0.
+    This is a slightly stripped down version of the method which was removed
+    from photutils in 1.7.0.
 
     Parameters
     ----------
@@ -202,7 +211,7 @@ def extract_spectrogram_background_fit1D(data, err, deg=1, ws=(20, 30), pixel_st
 
 def extract_spectrogram_background_sextractor(data, err, ws=(20, 30), mask_signal_region=True, Dy_disp_axis=None):
     """
-    Use photutils library median filter to estimate background behgin the sources.
+    Use SEP background meshes to estimate the background behind the sources.
 
     Parameters
     ----------
@@ -256,33 +265,43 @@ def extract_spectrogram_background_sextractor(data, err, ws=(20, 30), mask_signa
 
     # first estimate of median background
     filter_size = parameters.PIXWIDTH_BOXSIZE // 2
-    if filter_size % 2 == 0:  # must be odd since photutils 1.5.0
+    if filter_size % 2 == 0:  # must be odd
         filter_size += 1
 
     # mask sources
     mask = make_source_mask(data, nsigma=3, npixels=5, dilate_size=11)
 
     # mask null edges on rotated maps
-    mask += data == 0
+    mask = np.logical_or(mask, data == 0)
     # Estimate the background in the two lateral bands together
-    sigma_clip = SigmaClip(sigma=3.)
-    bkg_estimator = SExtractorBackground()
     bgd_bands = np.copy(data).astype(float)
     if mask_signal_region:
         for dx in range(Nx):
             bgd_bands[int(Dy_disp_axis[dx] - ws[0]):int(Dy_disp_axis[dx] + ws[0]), dx] = np.nan
-            mask += (np.isnan(bgd_bands))
-    bkg = Background2D(data, (parameters.PIXWIDTH_BOXSIZE, parameters.PIXWIDTH_BOXSIZE),
-                       filter_size=(filter_size, filter_size),
-                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator,
-                       mask=mask)
+            mask = np.logical_or(mask, np.isnan(bgd_bands))
+
+    sep_data = np.ascontiguousarray(data, dtype=np.float32)
+    finite_mask = ~np.isfinite(sep_data)
+    if mask is None:
+        sep_mask = finite_mask
+    else:
+        sep_mask = np.logical_or(np.ascontiguousarray(mask, dtype=bool),
+                                 finite_mask)
+    if np.any(finite_mask):
+        sep_data = sep_data.copy()
+        sep_data[finite_mask] = 0
+    bkg = sep.Background(sep_data, mask=mask,
+                         bw=parameters.PIXWIDTH_BOXSIZE, bh=parameters.PIXWIDTH_BOXSIZE,
+                         fw=filter_size, fh=filter_size)
+    background = bkg.back()
+    background_rms = bkg.rms()
     # reset at zero the edges
-    bkg.background[data == 0] = 0
-    bgd_model_func_interp = RegularGridInterpolator((np.arange(Nx), np.arange(Ny)), bkg.background.T, method='linear',
+    background[data == 0] = 0
+    bgd_model_func_interp = RegularGridInterpolator((np.arange(Nx), np.arange(Ny)), background.T, method='linear',
                                                     bounds_error=False, fill_value=None)
 
     bgd_model_func = _from_bkgd_interp_to_func(bgd_model_func_interp)
-    bgd_res = ((data - bkg.background)/err)
+    bgd_res = ((data - background)/err)
     bgd_res[mask] = np.nan
 
     if parameters.DEBUG:
@@ -311,8 +330,11 @@ def extract_spectrogram_background_sextractor(data, err, ws=(20, 30), mask_signa
         ax0.set_ylabel(parameters.PLOT_YLABEL)
         ax0.set_xticks([])
         ax1.set_xticks([])
-        bkg.plot_meshes(outlines=True, color='red', ax=ax1, linewidth=0.5)
-        b = bkg.background
+        for x_mesh in np.arange(0, Nx, parameters.PIXWIDTH_BOXSIZE):
+            ax1.axvline(x_mesh, color='red', linewidth=0.5)
+        for y_mesh in np.arange(0, Ny, parameters.PIXWIDTH_BOXSIZE):
+            ax1.axhline(y_mesh, color='red', linewidth=0.5)
+        b = background
         im = ax1.imshow(b, origin='lower', aspect="auto", vmin=mean - 3 * std, vmax=mean + 3 * std, cmap=cmap)
         ax1.set_xlabel(parameters.PLOT_XLABEL)
         ax1.set_ylabel(parameters.PLOT_YLABEL)
@@ -344,7 +366,7 @@ def extract_spectrogram_background_sextractor(data, err, ws=(20, 30), mask_signa
             fig.savefig(os.path.join(parameters.LSST_SAVEFIGPATH, 'background_extraction.pdf'))
         if parameters.DISPLAY:  # pragma: no cover
             plt.show()
-    return bgd_model_func, bgd_res, bkg.background_rms
+    return bgd_model_func, bgd_res, background_rms
 
 
 def extract_spectrogram_background_poly2D(data, deg=1, ws=(20, 30), pixel_step=1, sigma=5):

@@ -17,7 +17,7 @@ from scipy.spatial import ConvexHull
 from spectractor import parameters
 from spectractor.tools import (plot_image_simple, set_wcs_file_name, set_wcs_tag, set_wcs_output_directory,
                                set_sources_file_name, set_gaia_catalog_file_name, load_wcs_from_file, ensure_dir,
-                               iraf_source_detection)
+                               sep_source_detection)
 from spectractor.config import set_logger
 from spectractor.extractor.images import Image
 from spectractor.extractor.background import remove_image_background_sextractor
@@ -258,7 +258,7 @@ def wcs_transpose(wcs, image):  # pragma: no cover
 class Astrometry():  # pragma: no cover
 
     def __init__(self, image, wcs_file_name="", gaia_file_name="", output_directory="",
-                 gaia_mag_g_limit=23, source_extractor="iraf"):
+                 gaia_mag_g_limit=23):
         """Class to handle astrometric computations.
 
         Parameters
@@ -273,10 +273,6 @@ class Astrometry():  # pragma: no cover
             The output directory path. If empty, a directory *_wcs is created next to the analyzed image (default: "").
         gaia_mag_g_limit: float, optional
             Maximum g magnitude in the Gaia catalog output (default: 23).
-        source_extractor: str, optional
-            Source extraction algorithm to be used for astrometry solving. Can be either:
-            - iraf: uses the tools.py iraf_source_detection function which wraps the photutils IRAFStarFinder module
-            - astrometrynet: uses the default astrometry.net source extraction library
 
         Examples
         --------
@@ -288,10 +284,6 @@ class Astrometry():  # pragma: no cover
         self.my_logger = set_logger(self.__class__.__name__)
         self.image = image
         self.gaia_mag_g_limit = gaia_mag_g_limit
-        if source_extractor not in ["iraf", "astrometrynet"]:
-            raise ValueError(f"source_extractor argument in Astrometry class must be either 'iraf' or 'astrometrynet'. "
-                             f"Got {source_extractor=}")
-        self.source_extractor = source_extractor
         # Use fast mode
         if parameters.CCD_REBIN > 1:
             self.image.rebin()
@@ -1016,9 +1008,7 @@ class Astrometry():  # pragma: no cover
         """Build a World Coordinate System (WCS) using astrometry.net library given an exposure as a FITS file.
 
         The name of the target must be given to get its RA,DEC coordinates via a Simbad query.
-        If 'iraf' source_extractor is chosen, first the background of the exposure is removed using the astropy
-        SExtractorBackground() method, then photutils iraf_source_detection() is used to get the positions in pixels
-        and fluxes of the objects in the field. If 'astrometrynet' is chosen, astrometry.net extractor is used.
+        SEP is used to get the positions in pixels and fluxes of the objects in the field.
         The results are saved in the {file_name}.axy file and used by the solve_field command from the
         astrometry.net library. The solve_field path must be set using the spectractor.parameters.ASTROMETRYNET_BINDIR
         variable. A new WCS is created and saved as a new FITS file. The WCS file and the intermediate results
@@ -1034,14 +1024,14 @@ class Astrometry():  # pragma: no cover
         Notes
         -----
         The source file given to solve-field is understood as a FITS file with pixel origin value at 1,
-        whereas pixel coordinates comes from photutils using a numpy convention with pixel origin value at 0.
+        whereas pixel coordinates come from SEP using a numpy convention with pixel origin value at 0.
         To correct for this we shift the CRPIX center of 1 pixel at the end of the function. It can be that solve-field
         using the source list or the raw FITS image then give the same WCS values.
 
         See Also
         --------
 
-        iraf_source_detection()
+        sep_source_detection()
 
         Examples
         --------
@@ -1058,7 +1048,7 @@ class Astrometry():  # pragma: no cover
         >>> tag = file_name.split('/')[-1]
         >>> disperser_label, target_label, xpos, ypos = logbook.search_for_image(tag)
         >>> im = Image(file_name, target_label=target_label, disperser_label=disperser_label, config="ctio.ini")
-        >>> a = Astrometry(im, source_extractor="astrometrynet")
+        >>> a = Astrometry(im)
         >>> a.run_simple_astrometry(extent=((300,1400),(300,1400)))  # doctest: +ELLIPSIS
         WCS ...
 
@@ -1070,39 +1060,23 @@ class Astrometry():  # pragma: no cover
             >>> assert a.sources is not None
 
         """
-        tmp_image_file_name = self.wcs_file_name.replace(".wcs", "_tmp.fits")
         if sources is None:
-            if self.source_extractor == "iraf":
-                if extent is not None:
-                    data = self.image.data[extent[1][0]:extent[1][1], extent[0][0]:extent[0][1]]
-                else:
-                    data = np.copy(self.image.data)
-                # remove background
-                self.my_logger.info('\n\tRemove background using astropy SExtractorBackground()...')
-                data_wo_bkg = remove_image_background_sextractor(data, sigma=3.0, box_size=(50, 50),
-                                                                 filter_size=(11, 11), positive=True)
-                # extract source positions and fluxes
-                self.my_logger.info('\n\tDetect sources using photutils iraf_source_detection()...')
-                self.sources = iraf_source_detection(data_wo_bkg, sigma=3.0, fwhm=3.0, threshold_std_factor=5,
-                                                     mask=None)
-                if extent is not None:
-                    self.sources['xcentroid'] += extent[0][0]
-                    self.sources['ycentroid'] += extent[1][0]
-                # write results in fits file
-                self.write_sources()
-                solve_field_input = self.sources_file_name
-            elif self.source_extractor == "astrometrynet":
-                self.my_logger.info(f"\n\tSource extraction directly with solve-field.")
-                # must write a temporary image file with Spectractor flips and rotations
-                fits.writeto(tmp_image_file_name, self.image.data, header=self.image.header, overwrite=True)
-                solve_field_input = tmp_image_file_name
+            if extent is not None:
+                data = self.image.data[extent[1][0]:extent[1][1], extent[0][0]:extent[0][1]]
             else:
-                raise ValueError(f"Got {self.source_extractor=}. Must be either 'iraf' or 'astrometrynet' "
-                                 f"if sources are not given in argument.")
+                data = np.copy(self.image.data)
+            # extract source positions and fluxes
+            self.my_logger.info("\n\tDetecting sources using sep_source_detection()...")
+            self.sources = sep_source_detection(data, threshold_std_factor=5,
+                                                mask=None)
+            if extent is not None:
+                self.sources["xcentroid"] += extent[0][0]
+                self.sources["ycentroid"] += extent[1][0]
         else:
             self.sources = sources
-            self.write_sources()
-            solve_field_input = self.sources_file_name
+        # write results in fits file
+        self.write_sources()
+        solve_field_input = self.sources_file_name
 
         # run astrometry.net
         exec = _get_astrometry_executable_path('solve-field')
@@ -1121,13 +1095,11 @@ class Astrometry():  # pragma: no cover
             self.my_logger.warning(f"\n\tAstrometry command:\n{command}")
             self.my_logger.error(f"\n\t{e.stderr}")
             sys.exit()
-        if os.path.isfile(tmp_image_file_name):
-            os.remove(tmp_image_file_name)
         if os.path.isfile(os.path.join(self.output_directory, self.tag.rstrip('/')+".new")):
             os.remove(os.path.join(self.output_directory, self.tag.rstrip('/')+".new"))
 
         # The source file given to solve-field is understood as a FITS file with pixel origin value at 1,
-        # whereas pixel coordinates comes from photutils using a numpy convention with pixel origin value at 0
+        # whereas pixel coordinates come from SEP using a numpy convention with pixel origin value at 0
         # To correct for this we shift the CRPIX center of 1 pixel
         with fits.open(self.wcs_file_name) as hdu:
             hdu[0].header['CRPIX1'] = float(hdu[0].header['CRPIX1']) + 1
